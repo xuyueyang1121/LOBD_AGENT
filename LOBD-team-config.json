@@ -1,0 +1,132 @@
+{
+  "provider": "autogen_agentchat.teams.RoundRobinGroupChat",
+  "component_type": "team",
+  "version": 1,
+  "component_version": 1,
+  "description": "A single AssistantAgent (with a calculator tool) in a RoundRobinGroupChat team. ",
+  "label": "LOBD Prediction Agent Team",
+  "config": {
+    "participants": [
+      {
+        "provider": "autogen_agentchat.agents.AssistantAgent",
+        "component_type": "agent",
+        "version": 1,
+        "component_version": 1,
+        "description": "An agent that provides assistance with tool use.  ",
+        "label": "LOBD Prediction Agent",
+        "config": {
+          "name": "assistant_agent",
+          "model_client": {
+            "provider": "autogen_ext.models.openai.OpenAIChatCompletionClient",
+            "component_type": "model",
+            "version": 1,
+            "component_version": 1,
+            "description": "OpenAI Deepseek R1",
+            "label": "Deepseek R1",
+            "config": {
+              "model": "deepseek-r1-250528",
+              "api_key": "0fa6a6a6-03dc-4a9d-9105-93de037df842",
+              "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+              "model_info": {
+                "vision": false,
+                "function_calling": true,
+                "tool_calls": true,
+                "streaming": true,
+                "json_output": false,
+                "structured_output": false,
+                "family": "unknown"
+              }
+            }
+          },
+          "model_context": {
+            "provider": "autogen_core.model_context.UnboundedChatCompletionContext",
+            "component_type": "chat_completion_context",
+            "version": 1,
+            "component_version": 1,
+            "description": "An unbounded chat completion context that keeps a view of the all the messages.",
+            "label": "UnboundedChatCompletionContext",
+            "config": {}
+          },
+          "description": "An agent that provides assistance with ability to use tools.",
+          "system_message": "You are a helpful assistant. person_features = {\n\"ibs\": 0 #range 0，1\n\"Hemorrhage stroke\": 0 #range 0，1\n\"cancer\": 0 #range 0，1\n\"respiratory_disease\": 0 #range 0，1\n\"living_type\": 0 #range 0，1\n\"vigorous_activity_weekly\": 0 #range 0，1\n\"smoking_status\": 0 #range 0，1，2\n\"fall_last_year\": 0  #range 0，1，2\n\"sunscreen_use\": 1  #range 1，2，3，4，5\n\"heart_failure\": 0 #range 0，1\n\"sex\": 0 #range 0，1\n\"frailty_status\": 0 #range 0，1，2\n\"diabetes_diagnosed \": 0 #range 0，1，2\n\"age\": 0 #range 0，1，2，3，4\n\"BD_PRS\": 0 #range -6.832730 - 12.076910 Continuous variable\n}, Do you know what features are needed to calculate the risk score? They are the \"key\" part of the person_features dictionary. If someone needs to calculate the risk score, you need to guide the user to input the relevant information. You organize it into a dictionary format yourself and call the calc LOBD risk score tool to calculate. if user unknown some information, use the default value of 0. Finally, input the appropriate dictionary into the calc LOBD risk score tool. If someone gives you a risk score requirement to calculate the risk of illness, then use the LOBD prediction Tool.Solve tasks carefully. When done, say TERMINATE. ",
+          "model_client_stream": false,
+          "reflect_on_tool_use": false,
+          "tool_call_summary_format": "{result}",
+          "metadata": {},
+          "tools": [
+            {
+              "provider": "autogen_core.tools.FunctionTool",
+              "component_type": "tool",
+              "version": 1,
+              "component_version": 1,
+              "description": "A tool that predict LOBD in MDD patient.",
+              "label": "LOBD prediction Tool",
+              "config": {
+                "source_code": "def predict_risk_by_score(score: float) -> dict:\n    \"\"\"\n    Directly pass in integer/floating-point \"scores\" , and return the cumulative risks over 5, 10, 15 years and the total follow-up period.\nHere, the default score only corresponds to a single variable 'OverallRiskScore' in the Cox model.\nIts coefficient β = 0.09112047785466491, and the unit of the model time-to-event is \"days\".\n\n    Parameters\n    ----------\n    score : float\n        Both positive and negative score are acceptable\n\n    Returns\n    -------\n    dict\n        Format {'risk_5_years': 0.1234, 'risk_10_years': ..., 'total_risk': ...}\n    \"\"\"\n    import os\n    import pickle\n    import numpy as np\n    from lifelines import CoxPHFitter\n\n    # Path configuration\n    APP_DIR = os.environ.get(\"AUTOGEN_APPDIR\", \".\")\n    MODEL_PATH = os.path.join(APP_DIR, \"autogen_cph_app/cph_2025.6.22.pkl\")\n\n    # load Cox model\n    with open(MODEL_PATH, \"rb\") as f:\n        cph_model: CoxPHFitter = pickle.load(f)\n\n    # ------------------- Parameter  -------------------\n    beta = 0.09112047785466491          # OverallRiskScore coef β\n    log_hr = beta * score               # η = β × score\n    hr = np.exp(log_hr)                 # hazard ratio\n\n    baseline_survival = cph_model.baseline_survival_.iloc[:, 0]  # Series\n    year_to_days = {5: 365 * 5, 10: 365 * 10, 15: 365 * 15}\n    t_grid = baseline_survival.index.values.astype(float)\n    s0_vals = baseline_survival.values.astype(float)\n\n    def s0_at(t):\n        \"\"\"linear interpolation S0(t)\"\"\"\n        if t <= t_grid[0]:\n            return s0_vals[0]\n        if t >= t_grid[-1]:\n            return s0_vals[-1]\n        return np.interp(t, t_grid, s0_vals)\n\n    # ------------------- Calculate risk  -------------------\n    results = {}\n    for year, t in year_to_days.items():\n        s0 = s0_at(t)\n        surv = s0 ** hr          # S(t | x)\n        risk = 1 - surv\n        results[f\"risk_{year}_years\"] = round(float(risk), 4)\n\n    #  Overall follow-up period risk\n    s0_max = s0_vals[-1]\n    risk_total = 1 - (s0_max ** hr)\n    results[\"total_risk\"] = round(float(risk_total), 4)\n\n    return results\n\n\n\n\n\n\n\n\n",
+                "name": "predict_risk_by_score",
+                "description": "A simple calculator that performs basic arithmetic operations",
+                "global_imports": [
+                  "os",
+                  "pickle",
+                  "numpy",
+                  "lifelines"
+                ],
+                "has_cancellation_support": false
+              }
+            },
+            {
+              "provider": "autogen_core.tools.FunctionTool",
+              "component_type": "tool",
+              "version": 1,
+              "component_version": 1,
+              "description": "A tool that calculate LOBD risk score ",
+              "label": "calc LOBD risk score ",
+              "config": {
+                "source_code": "def calc_risk_score_by_features(features: dict) -> float:\n    \"\"\"\n    Input the dictionary of each characteristic value of an individual and return the weighted summation risk score.\n\n    Parameter\n    ----\n    features : dict\n        In the form of {'ibs': 1, 'cancer': 0, 'age': 45, ...} characteristic key-value pair.\n\n    return\n    ----\n    float\n        The calculated risk score (weighted sum)\n    \"\"\"\n    WEIGHTS = {\n        \"ibs\": -3.0,\n        \"hemorrhagic_stroke\": 7.0,\n        \"cancer\": 7.0,\n        \"respiratory_disease\": 4.0,\n        \"living_type\": 1.0,\n        \"vigorous_activity_weekly\": -2.0,\n        \"smoking_status\": 2.0,\n        \"fall_last_year\": 1.0,\n        \"sunscreen_use\": -1.0,\n        \"heart_failure\": 4.0,\n        \"sex\": 3.0,\n        \"frailty_status\": 2.0,\n        \"diabetes_diagnosed\": 3.0,\n        \"age\": 2.0,\n        \"BD_PRS\": 2.0,\n    }\n\n    score = 0.0\n    for feat, weight in WEIGHTS.items():\n        val = features.get(feat, 0)\n        score += val * weight\n\n    return score\n",
+                "name": "calc_risk_score_by_features",
+                "description": "A simple calculator that performs basic arithmetic operations",
+                "global_imports": [],
+                "has_cancellation_support": false
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "termination_condition": {
+      "provider": "autogen_agentchat.base.OrTerminationCondition",
+      "component_type": "termination",
+      "version": 1,
+      "component_version": 1,
+      "label": "OrTerminationCondition",
+      "config": {
+        "conditions": [
+          {
+            "provider": "autogen_agentchat.conditions.TextMentionTermination",
+            "component_type": "termination",
+            "version": 1,
+            "component_version": 1,
+            "description": "Terminate the conversation if a specific text is mentioned.",
+            "label": "TextMentionTermination",
+            "config": {
+              "text": "TERMINATE"
+            }
+          },
+          {
+            "provider": "autogen_agentchat.conditions.MaxMessageTermination",
+            "component_type": "termination",
+            "version": 1,
+            "component_version": 1,
+            "description": "Terminate the conversation after a maximum number of messages have been exchanged.",
+            "label": "MaxMessageTermination",
+            "config": {
+              "max_messages": 10,
+              "include_agent_event": false
+            }
+          }
+        ]
+      }
+    },
+    "emit_team_events": false
+  }
+}
