@@ -1,4 +1,4 @@
-<img width="432" height="10" alt="image" src="https://github.com/user-attachments/assets/f6a5d399-0c96-49e0-914a-9d1cc7fb7542" /># LOBD_AGENT
+# LOBD_AGENT
 > This repository contains the official code implementation for the paper **"XXXXXXXXXXXXX"**.
 ##  Environment Setup
 
